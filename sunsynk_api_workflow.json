@@ -1,0 +1,290 @@
+{
+  "name": "Sunsynk API Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "11111111-0001-0001-0001-000000000001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.sunsynk.net/oauth/token",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "username",
+              "value": "={{ $vars.SUNSYNK_USERNAME }}"
+            },
+            {
+              "name": "password",
+              "value": "={{ $vars.SUNSYNK_PASSWORD }}"
+            },
+            {
+              "name": "grant_type",
+              "value": "password"
+            },
+            {
+              "name": "client_id",
+              "value": "csp-web"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11111111-0002-0002-0002-000000000002",
+      "name": "Sunsynk Login",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nif (!data.data || !data.data.access_token) {\n  throw new Error('Login failed: ' + JSON.stringify(data));\n}\n\nreturn [{\n  json: {\n    access_token: data.data.access_token,\n    token_type: data.data.token_type || 'Bearer',\n    expires_in: data.data.expires_in\n  }\n}];"
+      },
+      "id": "11111111-0003-0003-0003-000000000003",
+      "name": "Extract Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.sunsynk.net/api/v1/plants?page=1&limit=10&name=&status=",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11111111-0004-0004-0004-000000000004",
+      "name": "Get Plants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const token = $('Extract Token').first().json.access_token;\nconst plantsData = $input.first().json;\n\nif (!plantsData.data || !plantsData.data.infos) {\n  throw new Error('Failed to get plants: ' + JSON.stringify(plantsData));\n}\n\nreturn plantsData.data.infos.map(plant => ({\n  json: {\n    access_token: token,\n    plant_id: plant.id,\n    plant_name: plant.name,\n    plant_status: plant.status,\n    plant_battery_soc: plant.batterySoc,\n    plant_pac: plant.pac,\n    plant_eday: plant.eday,\n    plant_emonth: plant.emonth,\n    plant_etotal: plant.etotal,\n    master_sn: plant.masterSn || null\n  }\n}));"
+      },
+      "id": "11111111-0005-0005-0005-000000000005",
+      "name": "Process Plants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.sunsynk.net/api/v1/plant/{{ $json.plant_id }}/realtime?sn={{ $json.master_sn }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11111111-0006-0006-0006-000000000006",
+      "name": "Get Plant Realtime",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.sunsynk.net/api/v1/plant/{{ $json.plant_id }}/energy/day?lan=en&date={{ $now.format('YYYY-MM-DD') }}&id={{ $json.plant_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11111111-0007-0007-0007-000000000007",
+      "name": "Get Daily Energy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const plantInfo = $('Process Plants').item.json;\nconst realtimeRaw = $('Get Plant Realtime').item.json;\nconst energyRaw = $('Get Daily Energy').item.json;\n\nconst rt = realtimeRaw.data || {};\nconst energy = energyRaw.data || {};\n\nconst timestamp = new Date().toISOString();\n\nreturn [{\n  json: {\n    timestamp,\n    plant_id: plantInfo.plant_id,\n    plant_name: plantInfo.plant_name,\n    plant_status: plantInfo.plant_status,\n\n    // Power flows (W)\n    pv_power: rt.pvPower ?? null,\n    battery_power: rt.battPower ?? null,\n    grid_power: rt.gridOrMeterPower ?? null,\n    load_power: rt.loadOrEpsPower ?? null,\n\n    // Battery\n    battery_soc: rt.soc ?? plantInfo.plant_battery_soc ?? null,\n    battery_voltage: rt.battVolt ?? null,\n    battery_current: rt.battCurrent ?? null,\n    battery_temperature: rt.batteryTemperature ?? null,\n\n    // Grid\n    grid_voltage: rt.gridVoltage ?? null,\n    grid_frequency: rt.gridFrequency ?? null,\n    grid_connected: rt.gridConnected ?? null,\n\n    // Daily energy totals (kWh)\n    e_pv_day: energy.epvday ?? rt.etoday ?? null,\n    e_load_day: energy.eLoadday ?? null,\n    e_grid_buy_day: energy.ebuyDay ?? null,\n    e_grid_sell_day: energy.esellDay ?? null,\n    e_battery_charge_day: energy.echargeDay ?? null,\n    e_battery_discharge_day: energy.edischargeDay ?? null,\n\n    // Monthly / total\n    e_month: plantInfo.plant_emonth ?? null,\n    e_total: plantInfo.plant_etotal ?? null\n  }\n}];"
+      },
+      "id": "11111111-0008-0008-0008-000000000008",
+      "name": "Merge Plant Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-battery-low",
+              "leftValue": "={{ $json.battery_soc }}",
+              "rightValue": 20,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "11111111-0009-0009-0009-000000000009",
+      "name": "Battery Low?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "alert-message",
+              "name": "alert_message",
+              "value": "=Low battery alert for {{ $json.plant_name }}: SOC is {{ $json.battery_soc }}% at {{ $json.timestamp }}",
+              "type": "string"
+            },
+            {
+              "id": "alert-level",
+              "name": "alert_level",
+              "value": "warning",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "11111111-0010-0010-0010-000000000010",
+      "name": "Build Alert",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1980, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Output structured data ready for storage (InfluxDB, Postgres, webhook, etc.)\n// Replace or extend this node to write to your preferred data sink.\n\nconst item = $input.first().json;\n\nconsole.log('[Sunsynk] Plant data snapshot:', JSON.stringify(item, null, 2));\n\nreturn [{ json: { status: 'logged', ...item } }];"
+      },
+      "id": "11111111-0011-0011-0011-000000000011",
+      "name": "Store / Forward Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 400]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [{ "node": "Sunsynk Login", "type": "main", "index": 0 }]
+      ]
+    },
+    "Sunsynk Login": {
+      "main": [
+        [{ "node": "Extract Token", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Token": {
+      "main": [
+        [{ "node": "Get Plants", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Plants": {
+      "main": [
+        [{ "node": "Process Plants", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process Plants": {
+      "main": [
+        [
+          { "node": "Get Plant Realtime", "type": "main", "index": 0 },
+          { "node": "Get Daily Energy", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Plant Realtime": {
+      "main": [
+        [{ "node": "Merge Plant Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Daily Energy": {
+      "main": [
+        [{ "node": "Merge Plant Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Merge Plant Data": {
+      "main": [
+        [{ "node": "Battery Low?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Battery Low?": {
+      "main": [
+        [{ "node": "Build Alert", "type": "main", "index": 0 }],
+        [{ "node": "Store / Forward Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Alert": {
+      "main": [
+        [{ "node": "Store / Forward Data", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": ["sunsynk", "solar", "energy", "monitoring"],
+  "triggerCount": 1,
+  "updatedAt": "2026-06-19T00:00:00.000Z",
+  "versionId": "1"
+}
