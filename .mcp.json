@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "sunsynk-n8n": {
+      "url": "http://localhost:5678/mcp/REPLACE_WITH_WORKFLOW_ID/sse",
+      "headers": {
+        "Authorization": "Bearer REPLACE_WITH_N8N_API_KEY"
+      }
+    }
+  }
+}
